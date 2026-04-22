@@ -319,7 +319,7 @@ impl TerminalView {
             TerminalMode::Embedded {
                 max_lines_when_unfocused,
             } => {
-                let total_lines = self.terminal.read(cx).total_lines();
+                let total_lines = self.terminal.read(cx).content_lines();
 
                 if total_lines > Self::MAX_EMBEDDED_LINES {
                     ContentMode::Scrollable
