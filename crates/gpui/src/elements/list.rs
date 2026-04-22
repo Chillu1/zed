@@ -730,6 +730,8 @@ impl StateInner {
         if let FollowState::Tail { is_following } = &mut self.follow_state {
             if delta.y > px(0.) {
                 *is_following = false;
+            } else if new_scroll_top >= scroll_max - px(1.0) {
+                *is_following = true;
             }
         }
 
@@ -1135,7 +1137,11 @@ impl StateInner {
             content_height - self.scrollbar_drag_start_height.unwrap_or(content_height);
         let new_scroll_top = (point.y - drag_offset).abs().max(px(0.)).min(scroll_max);
 
-        self.follow_state = FollowState::Normal;
+        if let FollowState::Tail { .. } = self.follow_state {
+            self.follow_state = FollowState::Tail {
+                is_following: false,
+            };
+        }
 
         if self.alignment == ListAlignment::Bottom && new_scroll_top == scroll_max {
             self.logical_scroll_top = None;
@@ -2083,14 +2089,14 @@ mod test {
             ..Default::default()
         });
 
-        // Paint — should NOT re-engage because the scrollbar drag
-        // cleared the suspended state.
+        // Paint — should re-engage because scrollbar drag preserves
+        // the suspended Tail state, and scrolling to the bottom re-engages it.
         cx.draw(point(px(0.), px(0.)), size(px(100.), px(200.)), |_, _| {
             view.clone().into_any_element()
         });
         assert!(
-            !state.is_following_tail(),
-            "follow_tail should not re-engage after scrollbar drag cleared the suspended state"
+            state.is_following_tail(),
+            "follow_tail should re-engage after scrollbar drag + scroll to bottom"
         );
     }
 }
