@@ -1332,6 +1332,16 @@ impl Terminal {
         self.term.lock_unfair().total_lines()
     }
 
+    /// Returns the number of lines containing actual content: history lines plus viewport lines
+    /// up to and including the cursor position. Unlike `total_lines()`, this excludes empty rows
+    /// below the cursor, preventing the inline terminal view from showing blank space at the bottom.
+    pub fn content_lines(&self) -> usize {
+        let term = self.term.lock_unfair();
+        let history_size = term.history_size();
+        let cursor_line = term.grid().cursor.point.line.0;
+        history_size + cursor_line as usize + 1
+    }
+
     pub fn viewport_lines(&self) -> usize {
         self.term.lock_unfair().screen_lines()
     }
