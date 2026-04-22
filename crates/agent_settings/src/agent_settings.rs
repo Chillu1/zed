@@ -21,6 +21,14 @@ use settings::{
 
 pub use crate::agent_profile::*;
 
+#[derive(Clone, Debug)]
+pub struct NtfyConfig {
+    pub url: String,
+    pub idle_threshold_ms: u64,
+    pub audio_min_secs: u64,
+    pub renotify_secs: u64,
+}
+
 pub const SUMMARIZE_THREAD_PROMPT: &str = include_str!("prompts/summarize_thread_prompt.txt");
 pub const SUMMARIZE_THREAD_DETAILED_PROMPT: &str =
     include_str!("prompts/summarize_thread_detailed_prompt.txt");
@@ -168,6 +176,7 @@ pub struct AgentSettings {
     pub show_merge_conflict_indicator: bool,
     pub tool_permissions: ToolPermissions,
     pub new_thread_location: NewThreadLocation,
+    pub ntfy: Option<NtfyConfig>,
 }
 
 impl AgentSettings {
@@ -672,6 +681,15 @@ impl Settings for AgentSettings {
             show_merge_conflict_indicator: agent.show_merge_conflict_indicator.unwrap(),
             tool_permissions: compile_tool_permissions(agent.tool_permissions),
             new_thread_location: agent.new_thread_location.unwrap_or_default(),
+            ntfy: agent.ntfy.and_then(|n| {
+                let url = n.url.filter(|u| !u.is_empty())?;
+                Some(NtfyConfig {
+                    url,
+                    idle_threshold_ms: n.idle_threshold_secs.unwrap_or(60) * 1000,
+                    audio_min_secs: n.audio_min_secs.unwrap_or(10),
+                    renotify_secs: n.renotify_secs.unwrap_or(300),
+                })
+            }),
         }
     }
 }

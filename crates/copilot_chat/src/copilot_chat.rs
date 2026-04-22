@@ -261,7 +261,18 @@ impl Model {
     }
 
     pub fn max_token_count(&self) -> u64 {
-        self.capabilities.limits.max_context_window_tokens as u64
+        let reported = self.capabilities.limits.max_context_window_tokens as u64;
+        let id_lower = self.id.to_lowercase();
+        // GitHub Copilot's API underreports the context window for Claude Sonnet and Opus models;
+        // their actual limit is 1M tokens.
+        if reported == 200_000
+            && id_lower.contains("claude")
+            && (id_lower.contains("sonnet") || id_lower.contains("opus"))
+        {
+            1_000_000
+        } else {
+            reported
+        }
     }
 
     pub fn max_output_tokens(&self) -> usize {
