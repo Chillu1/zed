@@ -95,6 +95,29 @@ pub enum ThinkingBlockDisplay {
     AlwaysCollapsed,
 }
 
+/// Configuration for ntfy.sh push notifications.
+/// When the `url` field is set, Zed sends push notifications for agent events
+/// while the user is away from the keyboard.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct NtfySettingsContent {
+    /// ntfy topic URL. When set, enables push notifications.
+    /// Example: "https://ntfy.sh/my-zed-topic"
+    pub url: Option<String>,
+    /// Seconds of keyboard/mouse inactivity before considering the user AFK.
+    ///
+    /// Default: 60
+    pub idle_threshold_secs: Option<u64>,
+    /// Minimum seconds of continuous non-excluded audio playback before
+    /// counting the user as "active" (suppresses notifications).
+    ///
+    /// Default: 10
+    pub audio_min_secs: Option<u64>,
+    /// Seconds between re-sending a notification for pending confirmations.
+    ///
+    /// Default: 300
+    pub renotify_secs: Option<u64>,
+}
+
 #[with_fallible_options]
 #[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, Default)]
 pub struct AgentSettingsContent {
@@ -231,6 +254,9 @@ pub struct AgentSettingsContent {
     /// `always_confirm`) match against the tool's text input (command, path,
     /// URL, etc.).
     pub tool_permissions: Option<ToolPermissionsContent>,
+    /// Configuration for ntfy.sh push notifications.
+    /// See `NtfySettingsContent` for available options.
+    pub ntfy: Option<NtfySettingsContent>,
 }
 
 impl AgentSettingsContent {

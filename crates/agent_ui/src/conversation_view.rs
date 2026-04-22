@@ -36,6 +36,7 @@ use gpui::{
     WeakEntity, Window, WindowHandle, div, ease_in_out, img, linear_color_stop, linear_gradient,
     list, point, pulsating_between,
 };
+
 use language::Buffer;
 use language_model::{LanguageModelCompletionError, LanguageModelRegistry};
 use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
@@ -399,6 +400,8 @@ pub struct ConversationView {
     notifications: Vec<WindowHandle<AgentNotification>>,
     notification_subscriptions: HashMap<WindowHandle<AgentNotification>, Vec<Subscription>>,
     auth_task: Option<Task<()>>,
+    ntfy_monitor: crate::ntfy::NtfyMonitor,
+    _ntfy_tick_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -623,6 +626,8 @@ impl ConversationView {
         })
         .detach();
 
+        let ntfy_tick_task = Self::start_ntfy_tick_task(cx);
+
         Self {
             agent: agent.clone(),
             connection_store: connection_store.clone(),
@@ -647,6 +652,8 @@ impl ConversationView {
             notifications: Vec::new(),
             notification_subscriptions: HashMap::default(),
             auth_task: None,
+            ntfy_monitor: crate::ntfy::NtfyMonitor::new(),
+            _ntfy_tick_task: ntfy_tick_task,
             _subscriptions: subscriptions,
             focus_handle: cx.focus_handle(),
         }
@@ -1287,6 +1294,7 @@ impl ConversationView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.ntfy_monitor.on_user_message();
         if let Some(active) = self.active_thread() {
             active.update(cx, |active, cx| {
                 active.send_queued_message_at_index(index, is_send_now, window, cx);
@@ -1324,6 +1332,7 @@ impl ConversationView {
     ) {
         let thread_id = thread.read(cx).session_id().clone();
         let is_subagent = thread.read(cx).parent_session_id().is_some();
+
         match event {
             AcpThreadEvent::NewEntry => {
                 let len = thread.read(cx).entries().len();
@@ -1377,8 +1386,12 @@ impl ConversationView {
             ),
             AcpThreadEvent::ToolAuthorizationRequested(_) => {
                 self.notify_with_sound("Waiting for tool confirmation", IconName::Info, window, cx);
+                let thread_title = thread.read(cx).title().unwrap_or_default().to_string();
+                self.ntfy_monitor.on_confirmation_requested(&thread_title);
             }
-            AcpThreadEvent::ToolAuthorizationReceived(_) => {}
+            AcpThreadEvent::ToolAuthorizationReceived(_) => {
+                self.ntfy_monitor.on_confirmation_received();
+            }
             AcpThreadEvent::Retry(retry) => {
                 if let Some(active) = self.thread_view(&thread_id) {
                     active.update(cx, |active, _cx| {
@@ -1421,6 +1434,8 @@ impl ConversationView {
                     window,
                     cx,
                 );
+                let thread_title = thread.read(cx).title().unwrap_or_default().to_string();
+                self.ntfy_monitor.on_task_done(&thread_title);
 
                 let should_send_queued = if let Some(active) = self.active_thread() {
                     active.update(cx, |active, cx| {
@@ -1485,6 +1500,8 @@ impl ConversationView {
                         window,
                         cx,
                     );
+                    let thread_title = thread.read(cx).title().unwrap_or_default().to_string();
+                    self.ntfy_monitor.on_error(&thread_title);
                 }
             }
             AcpThreadEvent::LoadError(error) => {
@@ -2387,6 +2404,76 @@ impl ConversationView {
         MarkdownElement::new(markdown, style).on_url_click(move |text, window, cx| {
             crate::conversation_view::thread_view::open_link(text, &workspace, window, cx);
         })
+    }
+
+    fn start_ntfy_tick_task(cx: &mut Context<Self>) -> Option<Task<()>> {
+        Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+
+                // Check if ntfy is configured before doing expensive activity checks.
+                let ntfy_enabled = this
+                    .update(cx, |_this, cx| AgentSettings::get_global(cx).ntfy.is_some())
+                    .unwrap_or(false);
+
+                if !ntfy_enabled {
+                    continue;
+                }
+
+                // Run activity checks on a background thread (they spawn processes).
+                let (idle_ms, audio_app) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        (
+                            crate::ntfy::check_idle_ms(),
+                            crate::ntfy::check_active_audio_app(),
+                        )
+                    })
+                    .await;
+
+                // Run the monitor tick on the foreground and collect sends.
+                let result = this.update(cx, |this, cx| {
+                    let settings = AgentSettings::get_global(cx);
+                    let Some(config) = &settings.ntfy else {
+                        return (vec![], None, None);
+                    };
+                    let sends = this.ntfy_monitor.tick(config, idle_ms, audio_app);
+                    if sends.is_empty() {
+                        return (vec![], None, None);
+                    }
+                    let http_client = cx.http_client();
+                    (sends, Some(http_client), Some(config.url.clone()))
+                });
+
+                let (sends, http_client, ntfy_url) = match result {
+                    Ok(tuple) => tuple,
+                    Err(_) => break, // entity dropped
+                };
+
+                // Fire-and-forget HTTP sends on background threads.
+                if let (Some(http_client), Some(url)) = (http_client, ntfy_url) {
+                    for send in sends {
+                        let http_client = http_client.clone();
+                        let url = url.clone();
+                        cx.background_executor()
+                            .spawn(async move {
+                                if let Err(error) = crate::ntfy::send_ntfy(
+                                    &http_client,
+                                    &url,
+                                    &send.title,
+                                    &send.body,
+                                    send.priority,
+                                )
+                                .await
+                                {
+                                    log::error!("ntfy send error: {error}");
+                                }
+                            })
+                            .detach();
+                    }
+                }
+            }
+        }))
     }
 
     fn notify_with_sound(
