@@ -610,7 +610,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_run_rejects_invalid_substitution_before_terminal_creation(
+    async fn test_run_confirms_substitution_before_terminal_creation(
         cx: &mut gpui::TestAppContext,
     ) {
         crate::tests::init_test(cx);
@@ -635,7 +635,7 @@ mod tests {
         let tool = std::sync::Arc::new(TerminalTool::new(project, environment.clone()));
         let (event_stream, mut rx) = crate::ToolCallEventStream::test();
 
-        let task = cx.update(|cx| {
+        let _task = cx.update(|cx| {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "echo $HOME".to_string(),
@@ -647,31 +647,10 @@ mod tests {
             )
         });
 
-        let result = task.await;
-        let error = result.expect_err("expected invalid terminal command to be rejected");
-        assert!(
-            error.contains("does not allow shell substitutions or interpolations"),
-            "expected explicit invalid-command message, got: {error}"
-        );
+        let _auth = rx.expect_authorization().await;
         assert!(
             environment.terminal_creation_count() == 0,
-            "terminal should not be created for invalid commands"
-        );
-        assert!(
-            !matches!(
-                rx.try_recv(),
-                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
-            ),
-            "invalid command should not request authorization"
-        );
-        assert!(
-            !matches!(
-                rx.try_recv(),
-                Ok(Ok(crate::ThreadEvent::ToolCallUpdate(
-                    acp_thread::ToolCallUpdate::UpdateFields(_)
-                )))
-            ),
-            "invalid command should not emit a terminal card update"
+            "terminal should not be created before authorization for commands with substitutions"
         );
     }
 
@@ -988,7 +967,7 @@ mod tests {
         );
     }
 
-    async fn assert_rejected_before_terminal_creation(
+    async fn assert_confirms_before_terminal_creation(
         command: &str,
         cx: &mut gpui::TestAppContext,
     ) {
@@ -1012,7 +991,7 @@ mod tests {
         let tool = std::sync::Arc::new(TerminalTool::new(project, environment.clone()));
         let (event_stream, mut rx) = crate::ToolCallEventStream::test();
 
-        let task = cx.update(|cx| {
+        let _task = cx.update(|cx| {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: command.to_string(),
@@ -1024,101 +1003,89 @@ mod tests {
             )
         });
 
-        let result = task.await;
-        let error = result.unwrap_err();
-        assert!(
-            error.contains("does not allow shell substitutions or interpolations"),
-            "command {command:?} should be rejected with substitution message, got: {error}"
-        );
+        let _auth = rx.expect_authorization().await;
         assert!(
             environment.terminal_creation_count() == 0,
-            "no terminal should be created for rejected command {command:?}"
-        );
-        assert!(
-            !matches!(
-                rx.try_recv(),
-                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
-            ),
-            "rejected command {command:?} should not request authorization"
+            "command {command:?} should not create terminal before authorization"
         );
     }
 
     #[gpui::test]
-    async fn test_rejects_variable_expansion(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_variable_expansion(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo ${HOME}", cx).await;
+        assert_confirms_before_terminal_creation("echo ${HOME}", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_positional_parameter(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_positional_parameter(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo $1", cx).await;
+        assert_confirms_before_terminal_creation("echo $1", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_special_parameter_question(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_special_parameter_question(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo $?", cx).await;
+        assert_confirms_before_terminal_creation("echo $?", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_special_parameter_dollar(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_special_parameter_dollar(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo $$", cx).await;
+        assert_confirms_before_terminal_creation("echo $$", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_special_parameter_at(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_special_parameter_at(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo $@", cx).await;
+        assert_confirms_before_terminal_creation("echo $@", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_command_substitution_dollar_parens(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_command_substitution_dollar_parens(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo $(whoami)", cx).await;
+        assert_confirms_before_terminal_creation("echo $(whoami)", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_command_substitution_backticks(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_command_substitution_backticks(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo `whoami`", cx).await;
+        assert_confirms_before_terminal_creation("echo `whoami`", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_arithmetic_expansion(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_arithmetic_expansion(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo $((1 + 1))", cx).await;
+        assert_confirms_before_terminal_creation("echo $((1 + 1))", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_process_substitution_input(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_process_substitution_input(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("cat <(ls)", cx).await;
+        assert_confirms_before_terminal_creation("cat <(ls)", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_process_substitution_output(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_process_substitution_output(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("ls >(cat)", cx).await;
+        assert_confirms_before_terminal_creation("ls >(cat)", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_env_prefix_with_variable(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_env_prefix_with_variable(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("PAGER=$HOME git log", cx).await;
+        assert_confirms_before_terminal_creation("PAGER=$HOME git log", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_env_prefix_with_command_substitution(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_env_prefix_with_command_substitution(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("PAGER=$(whoami) git log", cx).await;
+        assert_confirms_before_terminal_creation("PAGER=$(whoami) git log", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_env_prefix_with_brace_expansion(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_env_prefix_with_brace_expansion(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation(
+        assert_confirms_before_terminal_creation(
             "GIT_SEQUENCE_EDITOR=${EDITOR} git rebase -i HEAD~2",
             cx,
         )
@@ -1126,21 +1093,21 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_rejects_multiline_with_forbidden_on_second_line(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_multiline_with_forbidden_on_second_line(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo ok\necho $HOME", cx).await;
+        assert_confirms_before_terminal_creation("echo ok\necho $HOME", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_multiline_with_forbidden_mixed(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_multiline_with_forbidden_mixed(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("PAGER=less git log\necho $(whoami)", cx).await;
+        assert_confirms_before_terminal_creation("PAGER=less git log\necho $(whoami)", cx).await;
     }
 
     #[gpui::test]
-    async fn test_rejects_nested_command_substitution(cx: &mut gpui::TestAppContext) {
+    async fn test_confirms_nested_command_substitution(cx: &mut gpui::TestAppContext) {
         crate::tests::init_test(cx);
-        assert_rejected_before_terminal_creation("echo $(cat $(whoami).txt)", cx).await;
+        assert_confirms_before_terminal_creation("echo $(cat $(whoami).txt)", cx).await;
     }
 
     #[gpui::test]
