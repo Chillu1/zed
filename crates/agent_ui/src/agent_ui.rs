@@ -22,6 +22,7 @@ mod message_editor;
 mod mode_selector;
 mod model_selector;
 mod model_selector_popover;
+mod ntfy;
 mod profile_selector;
 mod terminal_codegen;
 mod terminal_inline_assistant;
@@ -715,6 +716,7 @@ mod tests {
             show_merge_conflict_indicator: true,
             sidebar_side: Default::default(),
             thinking_display: Default::default(),
+            ntfy: None,
         };
 
         cx.update(|cx| {
