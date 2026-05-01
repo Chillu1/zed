@@ -20,5 +20,9 @@ rustflags = [
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
+# mold is dramatically faster than GNU ld for the final link step on x86_64
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
 [env]
 MACOSX_DEPLOYMENT_TARGET = "10.15.7"

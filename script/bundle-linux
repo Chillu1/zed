@@ -80,14 +80,18 @@ export CC=${CC:-$(which clang)}
 # [target.aarch64-unknown-linux-gnu] section in config.toml has no effect here.
 if [[ "$(uname -m)" == "aarch64" ]]; then
     export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=lld -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib"
+elif command -v mold >/dev/null 2>&1; then
+    export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib"
 else
     export RUSTFLAGS="${RUSTFLAGS:-} -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib"
 fi
-cargo build --release --target "${target_triple}" --package zed --package cli
-# Build remote_server in separate invocation to prevent feature unification from other crates
+
+# Build remote_server in a separate invocation to prevent feature unification from other crates
 # from influencing dynamic libraries required by it.
+# Compute RUSTFLAGS for remote_server before forking so each process gets the right flags.
+remote_rustflags="${RUSTFLAGS:-}"
 if [[ "$remote_server_triple" == "$musl_triple" ]]; then
-    export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
+    remote_rustflags="${remote_rustflags} -C target-feature=+crt-static"
     # System clang with glibc 2.38+ headers emits C23 symbols (__isoc23_sscanf,
     # __isoc23_strtol, etc.) that musl doesn't provide. Use musl-gcc instead so
     # that the C code in aws-lc-sys and friends is compiled against musl headers.
@@ -96,7 +100,17 @@ if [[ "$remote_server_triple" == "$musl_triple" ]]; then
         export "${musl_cc_var}=musl-gcc"
     fi
 fi
-cargo build --release --target "${remote_server_triple}" --package remote_server
+
+# Run both cargo builds concurrently — they target different output directories
+# (target/<gnu-triple> vs target/<musl-triple>) so there is no artifact conflict.
+cargo build --release --target "${target_triple}" --package zed --package cli &
+pid_main=$!
+RUSTFLAGS="${remote_rustflags}" cargo build --release --target "${remote_server_triple}" --package remote_server &
+pid_remote=$!
+
+# Wait for both; if either fails propagate the error.
+wait "$pid_main" || { wait "$pid_remote"; exit 1; }
+wait "$pid_remote" || exit 1
 
 # Upload debug info to sentry.io
 if ! command -v sentry-cli >/dev/null 2>&1; then
