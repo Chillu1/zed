@@ -88,6 +88,13 @@ cargo build --release --target "${target_triple}" --package zed --package cli
 # from influencing dynamic libraries required by it.
 if [[ "$remote_server_triple" == "$musl_triple" ]]; then
     export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
+    # System clang with glibc 2.38+ headers emits C23 symbols (__isoc23_sscanf,
+    # __isoc23_strtol, etc.) that musl doesn't provide. Use musl-gcc instead so
+    # that the C code in aws-lc-sys and friends is compiled against musl headers.
+    musl_cc_var="CC_${remote_server_triple//-/_}"
+    if [[ -z "${!musl_cc_var:-}" ]] && command -v musl-gcc >/dev/null 2>&1; then
+        export "${musl_cc_var}=musl-gcc"
+    fi
 fi
 cargo build --release --target "${remote_server_triple}" --package remote_server
 
