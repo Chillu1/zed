@@ -1,6 +1,9 @@
 [build]
 # v0 mangling scheme provides more detailed backtraces around closures
 rustflags = ["-C", "symbol-mangling-version=v0", "--cfg", "tokio_unstable"]
+# sccache caches per-crate compilation artifacts; it wraps rustc but not the
+# linker, so mold and sccache are fully independent and composable.
+rustc-wrapper = "sccache"
 
 [alias]
 xtask = "run --package xtask --"
