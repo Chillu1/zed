@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+use sysinfo::{Pid, ProcessRefreshKind, System};
 
 use language::language_settings::{EditPredictionProvider, all_language_settings};
 
@@ -91,9 +91,14 @@ impl ProcessMemoryCache {
             .unwrap_or(true);
 
         if cache_expired {
-            let refresh_kind = RefreshKind::nothing()
-                .with_processes(ProcessRefreshKind::nothing().without_tasks().with_memory());
-            self.system.refresh_specifics(refresh_kind);
+            // Use refresh_processes_specifics with remove_dead_processes=true instead of
+            // refresh_specifics — the latter leaks a file descriptor per /proc/PID/stat entry
+            // on each call, accumulating hundreds of thousands of FDs over a long session.
+            self.system.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::All,
+                true,
+                ProcessRefreshKind::nothing().without_tasks().with_memory(),
+            );
             self.memory_usage.clear();
             self.last_refresh = Some(Instant::now());
         }
