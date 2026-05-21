@@ -10,7 +10,7 @@ use std::{path::PathBuf, sync::Arc};
 #[cfg(target_os = "windows")]
 use windows::Win32::{Foundation::HANDLE, System::Threading::GetProcessId};
 
-use sysinfo::{Pid, Process, ProcessRefreshKind, RefreshKind, System, UpdateKind};
+use sysinfo::{Pid, Process, ProcessRefreshKind, System, UpdateKind};
 
 use crate::{Event, Terminal};
 
@@ -102,11 +102,14 @@ pub struct PtyProcessInfo {
 impl PtyProcessInfo {
     pub fn new(pty: &Pty) -> PtyProcessInfo {
         let process_refresh_kind = ProcessRefreshKind::nothing()
+            .without_tasks()  // tasks:true by default in nothing(); without_tasks prevents
+                              // opening /proc/<pid>/task/<tid>/stat for every thread system-wide
             .with_cmd(UpdateKind::Always)
             .with_cwd(UpdateKind::Always)
             .with_exe(UpdateKind::Always);
-        let refresh_kind = RefreshKind::nothing().with_processes(process_refresh_kind);
-        let system = System::new_with_specifics(refresh_kind);
+        // Don't full-scan on construction: refresh() uses ProcessesToUpdate::Some(&[pid])
+        // so the initial system-wide snapshot from new_with_specifics is never used.
+        let system = System::new();
 
         PtyProcessInfo {
             system: RwLock::new(system),
