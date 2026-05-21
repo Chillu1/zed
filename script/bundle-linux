@@ -12,8 +12,12 @@ Build a release .tar.gz for Linux.
 Options:
   -h, --help     Display this help and exit.
   --flatpak      Set ZED_BUNDLE_TYPE=flatpak so that this can be included in system info
+  --fast         Use release-fast profile (lto=false, codegen-units=16, incremental).
+                 Faster local iteration; skips sentry upload. Do not use for CI releases.
   "
 }
+
+fast_build=false
 
 # Parse all arguments manually
 while [[ $# -gt 0 ]]; do
@@ -24,6 +28,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --flatpak)
             export ZED_BUNDLE_TYPE=flatpak
+            shift
+            ;;
+        --fast)
+            fast_build=true
             shift
             ;;
         --)
@@ -103,17 +111,33 @@ fi
 
 # Run both cargo builds concurrently — they target different output directories
 # (target/<gnu-triple> vs target/<musl-triple>) so there is no artifact conflict.
-cargo build --release --target "${target_triple}" --package zed --package cli &
-pid_main=$!
-RUSTFLAGS="${remote_rustflags}" cargo build --release --target "${remote_server_triple}" --package remote_server &
-pid_remote=$!
+if "$fast_build"; then
+    # release-fast: lto=false, codegen-units=16, incremental — for local iteration.
+    cargo build --profile release-fast --target "${target_triple}" --package zed --package cli &
+    pid_main=$!
+    RUSTFLAGS="${remote_rustflags}" cargo build --profile release-fast --target "${remote_server_triple}" --package remote_server &
+    pid_remote=$!
+else
+    cargo build --release --target "${target_triple}" --package zed --package cli &
+    pid_main=$!
+    RUSTFLAGS="${remote_rustflags}" cargo build --release --target "${remote_server_triple}" --package remote_server &
+    pid_remote=$!
+fi
 
 # Wait for both; if either fails propagate the error.
 wait "$pid_main" || { wait "$pid_remote"; exit 1; }
 wait "$pid_remote" || exit 1
 
-# Upload debug info to sentry.io
-if ! command -v sentry-cli >/dev/null 2>&1; then
+# Cargo places artifacts under target/<triple>/release-fast for custom profiles.
+build_subdir="release"
+if "$fast_build"; then
+    build_subdir="release-fast"
+fi
+
+# Upload debug info to sentry.io (skipped for --fast builds)
+if "$fast_build"; then
+    echo "--fast build: skipping sentry upload."
+elif ! command -v sentry-cli >/dev/null 2>&1; then
     echo "sentry-cli not found. skipping sentry upload."
     echo "install with: 'curl -sL https://sentry.io/get-cli | bash'"
 else
@@ -124,8 +148,8 @@ else
         for attempt in 1 2 3; do
             echo "Attempting sentry upload (attempt $attempt/3)..."
             if sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev \
-                "${target_dir}/${target_triple}"/release/zed \
-                "${target_dir}/${remote_server_triple}"/release/remote_server; then
+                "${target_dir}/${target_triple}/${build_subdir}/zed" \
+                "${target_dir}/${remote_server_triple}/${build_subdir}/remote_server"; then
                 echo "Sentry upload successful on attempt $attempt"
                 break
             else
@@ -143,12 +167,12 @@ fi
 # Strip debug symbols and save them for upload to DigitalOcean.
 # We use llvm-objcopy because GNU objcopy on older distros (e.g. Ubuntu 20.04)
 # doesn't understand CREL sections produced by newer LLVM.
-llvm-objcopy --strip-debug "${target_dir}/${target_triple}/release/zed"
-llvm-objcopy --strip-debug "${target_dir}/${target_triple}/release/cli"
-llvm-objcopy --strip-debug "${target_dir}/${remote_server_triple}/release/remote_server"
+llvm-objcopy --strip-debug "${target_dir}/${target_triple}/${build_subdir}/zed"
+llvm-objcopy --strip-debug "${target_dir}/${target_triple}/${build_subdir}/cli"
+llvm-objcopy --strip-debug "${target_dir}/${remote_server_triple}/${build_subdir}/remote_server"
 
 # Ensure that remote_server does not depend on libssl nor libcrypto, as we got rid of these deps.
-if ldd "${target_dir}/${remote_server_triple}/release/remote_server" | grep -q 'libcrypto\|libssl'; then
+if ldd "${target_dir}/${remote_server_triple}/${build_subdir}/remote_server" | grep -q 'libcrypto\|libssl'; then
     if [[ "$remote_server_triple" == *-musl ]]; then
         echo "Error: remote_server still depends on libssl or libcrypto" && exit 1
     else
@@ -168,12 +192,12 @@ zed_dir="${temp_dir}/zed$suffix.app"
 
 # Binary
 mkdir -p "${zed_dir}/bin" "${zed_dir}/libexec"
-cp "${target_dir}/${target_triple}/release/zed" "${zed_dir}/libexec/zed-editor"
-cp "${target_dir}/${target_triple}/release/cli" "${zed_dir}/bin/zed"
+cp "${target_dir}/${target_triple}/${build_subdir}/zed" "${zed_dir}/libexec/zed-editor"
+cp "${target_dir}/${target_triple}/${build_subdir}/cli" "${zed_dir}/bin/zed"
 
 # Libs
 find_libs() {
-    ldd ${target_dir}/${target_triple}/release/zed |\
+    ldd ${target_dir}/${target_triple}/${build_subdir}/zed |\
         cut -d' ' -f3 |\
         grep -v '\<\(libstdc++.so\|libc.so\|libgcc_s.so\|libm.so\|libpthread.so\|libdl.so\|libasound.so\)'
 }
@@ -220,7 +244,7 @@ archive="zed-linux-${arch}.tar.gz"
 
 rm -rf "${archive}"
 remove_match="zed(-[a-zA-Z0-9]+)?-linux-$(uname -m)\.tar\.gz"
-ls "${target_dir}/release" | grep -E ${remove_match} | xargs -d "\n" -I {} rm -f "${target_dir}/release/{}" || true
-tar -czvf "${target_dir}/release/$archive" -C ${temp_dir} "zed$suffix.app"
+ls "${target_dir}/${build_subdir}" | grep -E ${remove_match} | xargs -d "\n" -I {} rm -f "${target_dir}/${build_subdir}/{}" || true
+tar -czvf "${target_dir}/${build_subdir}/$archive" -C ${temp_dir} "zed$suffix.app"
 
-gzip -f --stdout --best "${target_dir}/${remote_server_triple}/release/remote_server" > "${target_dir}/zed-remote-server-linux-${arch}.gz"
+gzip -f --stdout --best "${target_dir}/${remote_server_triple}/${build_subdir}/remote_server" > "${target_dir}/zed-remote-server-linux-${arch}.gz"

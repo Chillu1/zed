@@ -2,21 +2,29 @@
 
 set -euxo pipefail
 
-if [[ $# -gt 0 ]]; then
+fast_flag=""
+if [[ "${1:-}" == "--fast" ]]; then
+  fast_flag="--fast"
+elif [[ $# -gt 0 ]]; then
   echo "
-  Usage: ${0##*/}
+  Usage: ${0##*/} [--fast]
   Builds and installs zed onto your system into ~/.local, making it available as ~/.local/bin/zed.
 
-  Before running this you should ensure you have all the build dependencies installed with `./script/linux`.
+  --fast  Use release-fast profile (lto=false, incremental). Faster iteration; not for CI releases.
+
+  Before running this you should ensure you have all the build dependencies installed with \`./script/linux\`.
   "
   exit 1
 fi
+
 export ZED_CHANNEL=$(<crates/zed/RELEASE_CHANNEL)
 export ZED_UPDATE_EXPLANATION="You need to fetch and rebuild zed in $(pwd)"
-script/bundle-linux
+script/bundle-linux $fast_flag
 
 arch="$(uname -m)"
 commit=$(git rev-parse HEAD | cut -c 1-7)
 archive="zed-linux-${arch}.tar.gz"
-export ZED_BUNDLE_PATH="${CARGO_TARGET_DIR:-target}/release/${archive}"
+build_subdir="release"
+[[ -n "$fast_flag" ]] && build_subdir="release-fast"
+export ZED_BUNDLE_PATH="${CARGO_TARGET_DIR:-target}/${build_subdir}/${archive}"
 script/install.sh

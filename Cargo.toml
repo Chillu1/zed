@@ -979,6 +979,7 @@ inherits = "release"
 debug = "full"
 lto = false
 codegen-units = 16
+incremental = true
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "allow" }

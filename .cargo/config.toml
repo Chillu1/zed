@@ -22,9 +22,11 @@ rustflags = [
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
-# mold linker: set via RUSTFLAGS or CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS
-# in your shell profile on machines that have mold. Hardcoding it here breaks
-# cargo on machines where mold isn't in PATH (e.g. NixOS devShell without mold).
+# mold linker hardcoded for this fork (personal machine, mold always available).
+# Cuts link time from ~30s → ~3s for dev and release-fast profiles.
+# Upstream comment kept accurate: upstream avoids hardcoding for portability.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 [env]
 MACOSX_DEPLOYMENT_TARGET = "10.15.7"
